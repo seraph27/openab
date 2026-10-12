@@ -87,6 +87,16 @@ fn end_cancelled_tools(snapshot: &mut Value) {
         .retain(|_, tool| tool["background"] == true);
 }
 
+/// A call still pending when the provider stops never started (e.g. a streamed
+/// tool_use that was abandoned), so no result will ever close it. Only calls
+/// seen executing can outlive the turn.
+fn end_unstarted_tools(snapshot: &mut Value) {
+    snapshot["tools"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|_, tool| tool["status"] != "pending");
+}
+
 pub struct SessionState(Mutex<Value>);
 
 impl Default for SessionState {
@@ -128,6 +138,7 @@ impl SessionState {
         self.change(|snapshot| {
             snapshot["state"] = json!(state);
             if state == "interrupted" {
+                end_unstarted_tools(snapshot);
                 snapshot["operation"] = json!("none");
                 snapshot["permissionWaits"] = json!(0);
             }
@@ -243,13 +254,14 @@ impl SessionState {
                             end_cancelled_tools(snapshot);
                             snapshot["operation"] = json!("none");
                         }
+                        if matches!(
+                            provider,
+                            "idle" | "notLoaded" | "systemError" | "interrupted"
+                        ) {
+                            end_unstarted_tools(snapshot);
+                        }
                         if provider == "idle" {
-                            let tools = snapshot["tools"].as_object_mut().unwrap();
-                            // A call still pending when the turn ends never started (e.g. a
-                            // streamed tool_use that was abandoned), so no result will ever
-                            // close it. Only calls seen executing can outlive the turn.
-                            tools.retain(|_, tool| tool["status"] != "pending");
-                            for tool in tools.values_mut() {
+                            for tool in snapshot["tools"].as_object_mut().unwrap().values_mut() {
                                 tool["background"] = json!(true);
                             }
                         }
@@ -352,6 +364,25 @@ mod tests {
             vec!["bg"]
         );
         assert_eq!(tools["bg"]["background"], true);
+    }
+    #[test]
+    fn a_tool_call_that_never_started_does_not_survive_an_interruption() {
+        let pending = json!({"update":{"sessionUpdate":"tool_call","toolCallId":"abandoned","status":"pending","content":[{"type":"terminal","terminalId":"abandoned"}]}});
+        for provider in ["notLoaded", "systemError", "interrupted"] {
+            let state = SessionState::default();
+            state.set("active");
+            state.observe(Some(&pending));
+            state.observe(Some(&json!({"update":{"sessionUpdate":"session_info_update","_meta":{"ai.nuphos/sessionState":{"state":provider}}}})));
+            assert!(
+                state.snapshot()["tools"].as_object().unwrap().is_empty(),
+                "{provider}"
+            );
+        }
+        let state = SessionState::default();
+        state.set("active");
+        state.observe(Some(&pending));
+        state.set("interrupted");
+        assert!(state.snapshot()["tools"].as_object().unwrap().is_empty());
     }
     #[test]
     fn a_tool_call_that_already_exited_is_never_tracked() {
