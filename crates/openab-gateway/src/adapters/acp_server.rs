@@ -3787,8 +3787,8 @@ async fn handle_session_prompt(
     connection_generation: u64,
 ) {
     // sessionId was validated + reserved by the caller; only the prompt body can still be bad.
-    let prompt_text = match extract_prompt_params(params) {
-        Ok((_sid, text)) => text,
+    let mut blocks = match extract_prompt_params(params) {
+        Ok((_sid, blocks)) => blocks,
         Err(e) => {
             let resp = JsonRpcResponse::error(id, -32602, e);
             let _ = out_tx.send(serde_json::to_string(&resp).unwrap());
@@ -3851,7 +3851,11 @@ async fn handle_session_prompt(
 
     // Convert to GatewayEvent and dispatch. Build it first so its `event_id` can fence
     // this turn's replies (round-tripped as `GatewayReply.reply_to`).
-    let event = GatewayEvent::new(
+    // The client's last block is the prompt and the blocks before it stay separate, so an
+    // agent that only reads a slash command at the start of the prompt (Claude Code) still
+    // finds one the client sent after its own context blocks.
+    let prompt_text = blocks.pop().unwrap_or_default();
+    let mut event = GatewayEvent::new(
         "acp",
         ChannelInfo {
             id: channel_id.clone(),
@@ -3870,6 +3874,7 @@ async fn handle_session_prompt(
         &format!("acpmsg_{}", Uuid::new_v4()),
         Vec::new(),
     );
+    event.leading_text = blocks;
     let turn_id = event.event_id.clone();
 
     // Create reply channel for this prompt and register it, keyed by channel_id with the
@@ -4074,7 +4079,7 @@ async fn handle_session_prompt(
     let _ = out_tx.send(serde_json::to_string(&resp).unwrap());
 }
 
-fn extract_prompt_params(params: Option<&Value>) -> Result<(String, String), String> {
+fn extract_prompt_params(params: Option<&Value>) -> Result<(String, Vec<String>), String> {
     let params = params.ok_or("Missing params")?;
     let session_id = params
         .get("sessionId")
@@ -4130,14 +4135,14 @@ fn extract_prompt_params(params: Option<&Value>) -> Result<(String, String), Str
                 None => return Err("Prompt content block missing 'type'".into()),
             }
         }
-        parts.join("\n")
+        parts
     } else {
         // A plain-string `prompt` (or any non-array) does not match the generated
         // `PromptRequest.prompt: [ContentBlock]` shape → -32602 invalid params.
         return Err("Invalid prompt: 'prompt' must be an array of content blocks".into());
     };
 
-    if text.trim().is_empty() {
+    if text.iter().all(|t| t.trim().is_empty()) {
         return Err("Empty prompt".into());
     }
 
@@ -4571,13 +4576,13 @@ mod acp_conformance {
     #[test]
     fn prompt_content_blocks_baseline_accepted_gated_rejected() {
         use super::extract_prompt_params;
-        // text blocks accepted and concatenated
+        // text blocks accepted, one entry per block
         let (_, text) = extract_prompt_params(Some(&json!({
             "sessionId": "sess_x",
             "prompt": [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
         })))
         .unwrap();
-        assert_eq!(text, "a\nb");
+        assert_eq!(text, ["a", "b"]);
         // resource_link is BASELINE — accepted, rendered as a link reference (not fetched)
         let (_, text) = extract_prompt_params(Some(&json!({
             "sessionId": "sess_x",
@@ -4587,7 +4592,7 @@ mod acp_conformance {
             ]
         })))
         .unwrap();
-        assert_eq!(text, "see\n[X](file:///x)");
+        assert_eq!(text, ["see", "[X](file:///x)"]);
         // R17-F3b — `ResourceLink` requires `name`; a link missing it is rejected (-32602),
         // no longer rendered as a bare uri.
         assert!(

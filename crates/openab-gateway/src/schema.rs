@@ -14,6 +14,10 @@ pub struct GatewayEvent {
     pub content: Content,
     pub mentions: Vec<String>,
     pub message_id: String,
+    /// ACP passthrough only: the client's text blocks that came before `content.text`,
+    /// delivered to the agent as separate blocks ahead of it (empty for every other platform).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub leading_text: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,6 +172,7 @@ impl GatewayEvent {
             },
             mentions,
             message_id: message_id.into(),
+            leading_text: Vec::new(),
         }
     }
 }
