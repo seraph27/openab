@@ -126,6 +126,9 @@ struct GatewayEvent {
     #[allow(dead_code)]
     mentions: Vec<String>,
     message_id: String,
+    /// ACP passthrough: the client's text blocks ahead of `content.text`. Absent → empty.
+    #[serde(default)]
+    leading_text: Vec<String>,
 }
 
 fn default_gateway_event_type() -> String {
@@ -983,7 +986,11 @@ pub async fn run_gateway_adapter(
                                     let dispatcher = dispatcher.clone();
 
                                     // Convert gateway attachments to ContentBlocks
-                                    let mut extra_blocks = Vec::new();
+                                    let mut extra_blocks: Vec<ContentBlock> = event
+                                        .leading_text
+                                        .iter()
+                                        .map(|text| ContentBlock::Text { text: text.clone() })
+                                        .collect();
                                     for att in &event.content.attachments {
                                         // Rejected/truncated attachment: surface reason to the agent and skip.
                                         if let Some(ref reason) = att.status {
@@ -1141,7 +1148,8 @@ pub async fn run_gateway_adapter(
                                     // (Feishu/LINE/Telegram don't have native slash commands)
                                     // Use fire-and-forget send — slash command responses don't
                                     // need message_id for streaming edits.
-                                    let trimmed = prompt.trim();
+                                    // ACP clients send the agent's own commands; none are intercepted.
+                                    let trimmed = if event.platform == "acp" { "" } else { prompt.trim() };
                                     if trimmed == "/reset" {
                                         let thread_id_str = event.channel.thread_id.as_deref().unwrap_or(&event.channel.id);
                                         let thread_key = format!("{}:{}", event.platform, thread_id_str);
@@ -1498,7 +1506,11 @@ pub async fn process_gateway_event(
     };
 
     // Convert gateway attachments to ContentBlocks
-    let mut extra_blocks = Vec::new();
+    let mut extra_blocks: Vec<ContentBlock> = event
+        .leading_text
+        .iter()
+        .map(|text| ContentBlock::Text { text: text.clone() })
+        .collect();
     for att in &event.content.attachments {
         if let Some(ref reason) = att.status {
             let size_str = format_size(att.size);
@@ -1630,7 +1642,8 @@ pub async fn process_gateway_event(
 
     // Slash command interception
     let prompt = event.content.text.clone();
-    let trimmed = prompt.trim();
+    // ACP clients send the agent's own commands; none are intercepted.
+    let trimmed = if event.platform == "acp" { "" } else { prompt.trim() };
     if trimmed == "/reset" {
         let thread_id_str = event.channel.thread_id.as_deref().unwrap_or(&event.channel.id);
         let thread_key = format!("{}:{}", event.platform, thread_id_str);
