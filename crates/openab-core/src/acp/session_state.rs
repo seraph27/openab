@@ -290,6 +290,14 @@ impl SessionState {
                         }
                     }
                 }
+                // The agent's own slash commands, as it last listed them; it
+                // sends the whole list each time it changes. The published
+                // snapshot shapes them for clients (session_snapshot).
+                Some("available_commands_update") => {
+                    if update["availableCommands"].is_array() {
+                        snapshot["commands"] = update["availableCommands"].clone();
+                    }
+                }
                 Some("agent_thought_chunk") => snapshot["activity"] = json!("thinking"),
                 Some("agent_message_chunk") => snapshot["activity"] = json!("responding"),
                 Some("tool_call" | "tool_call_update") => {
@@ -328,6 +336,19 @@ impl SessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_agents_slash_commands_are_kept_as_last_listed() {
+        let state = SessionState::default();
+        let listed =
+            json!([{"name":"review","description":"Review the diff","input":{"hint":"branch"}}]);
+        state.observe(Some(&json!({"update":{"sessionUpdate":"available_commands_update","availableCommands":listed}})));
+        assert_eq!(state.snapshot()["commands"], listed);
+        state.observe(Some(
+            &json!({"update":{"sessionUpdate":"available_commands_update","availableCommands":[]}}),
+        ));
+        assert_eq!(state.snapshot()["commands"], json!([]));
+    }
+
     #[test]
     fn initialization_ack_does_not_override_an_earlier_native_lifecycle() {
         let new_session = SessionState::default();

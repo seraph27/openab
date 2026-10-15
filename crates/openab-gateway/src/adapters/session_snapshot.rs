@@ -226,6 +226,7 @@ impl SessionSnapshots {
             "providerState": provider_state, "providerEpoch": provider["epoch"],
             "operation": operation, "requestPending": request_pending,
             "providerDetails": provider["providerDetails"], "asyncTasks": provider["asyncTasks"], "automation": automation,
+            "commands": client_commands(&provider["commands"]),
             "lastOutcome": provider["gateway"]["lastOutcome"],
             "permissionWaits": permissions, "tools": tools, "requests": requests,
             "actions": {"send": send, "cancel": busy && phase != "cancelling" && phase != "configuring", "steer": provider["steeringSupported"] == true && executing && !matches!(phase, "cancelling" | "configuring" | "loading"), "reply": phase != "cancelling" && requests.iter().any(|request| request["kind"] != "client-tool")}
@@ -246,9 +247,52 @@ impl SessionSnapshots {
     }
 }
 
+/// The agent's slash commands as clients read them: `{ name, description, hint? }`,
+/// with ACP's `input.hint` flattened. An entry without a name is dropped.
+fn client_commands(commands: &Value) -> Value {
+    let Some(commands) = commands.as_array() else {
+        return Value::Null;
+    };
+    Value::Array(
+        commands
+            .iter()
+            .filter_map(|command| {
+                let mut entry = json!({
+                    "name": command["name"].as_str()?,
+                    "description": command["description"].as_str().unwrap_or(""),
+                });
+                if let Some(hint) = command.pointer("/input/hint").and_then(Value::as_str) {
+                    entry["hint"] = json!(hint);
+                }
+                Some(entry)
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_agents_slash_commands_reach_clients_flattened() {
+        let snapshots = SessionSnapshots::default();
+        let provider = json!({"state":"idle","commands":[
+            {"name":"review","description":"Review the diff","input":{"hint":"branch"}},
+            {"name":"compact"},
+            {"description":"no name"}
+        ]});
+        assert_eq!(
+            snapshots.project("s", provider, false)["commands"],
+            json!([
+                {"name":"review","description":"Review the diff","hint":"branch"},
+                {"name":"compact","description":""}
+            ])
+        );
+        assert_eq!(
+            snapshots.project("t", json!({"state":"idle"}), false)["commands"],
+            Value::Null
+        );
+    }
     #[test]
     fn native_steering_capability_is_runtime_owned() {
         let snapshots = SessionSnapshots::default();
