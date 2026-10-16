@@ -248,7 +248,7 @@ impl SessionSnapshots {
 }
 
 /// The agent's slash commands as clients read them: `{ name, description, hint? }`,
-/// with ACP's `input.hint` flattened. An entry without a name is dropped.
+/// with ACP's `input.hint` flattened. An entry without a name, or with an empty one, is dropped.
 fn client_commands(commands: &Value) -> Value {
     let Some(commands) = commands.as_array() else {
         return Value::Null;
@@ -258,7 +258,7 @@ fn client_commands(commands: &Value) -> Value {
             .iter()
             .filter_map(|command| {
                 let mut entry = json!({
-                    "name": command["name"].as_str()?,
+                    "name": command["name"].as_str().filter(|name| !name.is_empty())?,
                     "description": command["description"].as_str().unwrap_or(""),
                 });
                 if let Some(hint) = command.pointer("/input/hint").and_then(Value::as_str) {
@@ -279,7 +279,8 @@ mod tests {
         let provider = json!({"state":"idle","commands":[
             {"name":"review","description":"Review the diff","input":{"hint":"branch"}},
             {"name":"compact"},
-            {"description":"no name"}
+            {"description":"no name"},
+            {"name":"","description":"empty name"}
         ]});
         assert_eq!(
             snapshots.project("s", provider, false)["commands"],

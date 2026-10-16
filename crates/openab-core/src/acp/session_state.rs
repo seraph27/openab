@@ -294,8 +294,8 @@ impl SessionState {
                 // sends the whole list each time it changes. The published
                 // snapshot shapes them for clients (session_snapshot).
                 Some("available_commands_update") => {
-                    if update["availableCommands"].is_array() {
-                        snapshot["commands"] = update["availableCommands"].clone();
+                    if let Some(listed) = update["availableCommands"].as_array() {
+                        snapshot["commands"] = capped_commands(listed);
                     }
                 }
                 Some("agent_thought_chunk") => snapshot["activity"] = json!("thinking"),
@@ -333,9 +333,67 @@ impl SessionState {
     }
 }
 
+// The list rides on every published snapshot, so it is kept small before it is
+// stored, with the same caps as Nuphos's runtime-execution-snapshot.ts: at most
+// 100 named entries, descriptions cut at 200 characters and hints at 100.
+const MAX_COMMANDS: usize = 100;
+const MAX_DESCRIPTION: usize = 200;
+const MAX_HINT: usize = 100;
+
+fn capped_commands(listed: &[Value]) -> Value {
+    let cut = |value: &Value, max: usize| -> Option<Value> {
+        value
+            .as_str()
+            .map(|text| json!(text.chars().take(max).collect::<String>()))
+    };
+    Value::Array(
+        listed
+            .iter()
+            .filter(|command| {
+                command["name"]
+                    .as_str()
+                    .is_some_and(|name| !name.is_empty())
+            })
+            .take(MAX_COMMANDS)
+            .map(|command| {
+                let mut entry = command.clone();
+                if let Some(description) = cut(&command["description"], MAX_DESCRIPTION) {
+                    entry["description"] = description;
+                }
+                if let Some(hint) = command
+                    .pointer("/input/hint")
+                    .and_then(|hint| cut(hint, MAX_HINT))
+                {
+                    entry["input"]["hint"] = hint;
+                }
+                entry
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_agents_slash_commands_are_capped_before_they_are_stored() {
+        let mut state = SessionState::default();
+        let mut listed: Vec<Value> = (0..150).map(|i| json!({"name": format!("c{i}")})).collect();
+        listed.insert(0, json!({"name": "", "description": "empty name"}));
+        listed.insert(1, json!({"name": "long", "description": "d".repeat(500), "input": {"hint": "h".repeat(300)}}));
+        state.observe(Some(&json!({"update":{"sessionUpdate":"available_commands_update","availableCommands":listed}})));
+        let stored = state.snapshot()["commands"].as_array().unwrap().clone();
+        assert_eq!(stored.len(), 100);
+        assert_eq!(stored[0]["name"], "long");
+        assert_eq!(
+            stored[0]["description"].as_str().unwrap().chars().count(),
+            200
+        );
+        assert_eq!(
+            stored[0]["input"]["hint"].as_str().unwrap().chars().count(),
+            100
+        );
+    }
     #[test]
     fn the_agents_slash_commands_are_kept_as_last_listed() {
         let state = SessionState::default();
